@@ -24,6 +24,7 @@ void setupTympanHardware(void);
 void servicePotentiometer(unsigned long curTime_millis,unsigned long updatePeriod_millis);
 void applyConfiguration(void);
 void activateKnob(int channel, int knob);
+bool runCommand(char cmd);
 
 #define OPTION_ATTACK       0
 #define OPTION_RELEASE      1
@@ -58,7 +59,7 @@ CONFIGURABLE options[] = {
   { "cr", &gha.cr, "", 0.01f, 5.0f }
 };
 
-ExtendedSerialManager esm(options, 1, 7, applyConfiguration, activateKnob);
+ExtendedSerialManager esm(options, 1, 7, applyConfiguration, activateKnob, runCommand);
 
 //create audio library objects for handling the audio
 Tympan                  myTympan(TympanRev::D);  //TympanRev::D or TympanRev::C
@@ -77,6 +78,10 @@ void applyConfiguration(void) {
 
 void activateKnob(int channel, int knob) {
   selectedOption = knob;
+}
+
+bool runCommand(char cmd) {
+  return false;
 }
 
 //define a function to setup the Teensy Audio Board how I like it
