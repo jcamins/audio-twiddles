@@ -2,6 +2,9 @@
 #define _ExtendedSerialManager_h
 
 /*
+ *
+ * PROTOCOL
+ * 
  * Our extended serial protocol is intended to solve for the following use cases:
  * 1. The user wishes to interrogate the current value of a knob.
  * 2. The user wishes to directly set the current value of a knob within the knob's configured minimum/maximum.
@@ -32,8 +35,10 @@
  * query_command      ::= "&" , [channel_identifier] , knob_identifier , end_of_message
  * increment_command  ::= "+" , [channel_identifier] , knob_identifier , end_of_message
  * decrement_command  ::= "-" , [channel_identifier] , knob_identifier , end_of_message
- * set_command        ::= "*" , [channel_identifier] , knob_identifier , ? integer between 0 and 99 inclusive ? , end_of_message
- * apply_command      ::= "=" , (channel_identifier | knob_identifier) , "=" , ? float value ? , {"," , ? float value ?} , end_of_message
+ * set_command        ::= "*" , [channel_identifier] , knob_identifier
+ *                      , ? integer between 0 and 99 inclusive ? , end_of_message
+ * apply_command      ::= "=" , (channel_identifier | knob_identifier) , "="
+ *                      , ? float value ? , {"," , ? float value ?} , end_of_message
  * 
  * Several commands are reserved by the protocol:
  *  J - execute get_layout command
@@ -50,6 +55,16 @@
  * ACK=0 response (for failure).
  * 
  * Responses are newline delimited rather than semicolon delimited.
+ * 
+ */
+
+/*
+ *
+ * API
+ * 
+ * The extended serial manager is configured with a set of knob definitions and command definitions
+ * (plus counts, and two mandatory callbacks). See the inline comments below.
+ * 
  */
 
 #define PRINT_MESSAGES_FOR_HUMANS    true
@@ -69,8 +84,8 @@
 #include <ctype.h>
 #include <Tympan_Library.h>
 
-extern Tympan myTympan;               //defined in main *.ino file
-extern bool enable_printCPUandMemory; //defined in main *.ino file
+extern Tympan myTympan;
+extern bool enable_printCPUandMemory;
 
 
 enum MODE {
@@ -79,17 +94,19 @@ enum MODE {
 };
 
 typedef struct {
-  const char *name;
-  float *value;
-  const char *unit;
-  float min;
-  float max;
+  const char *name; // name of the knob for help purposes (e.g. "tk")
+  float *value;     // pointer to where the value should be stored
+  const char *unit; // unit in which the knob is defined for help purposes (e.g. "ms")
+  float min;        // minimum value for the knob
+  float max;        // maximum value for the knob
 } CONFIGURABLE;
 
 typedef struct {
-  const char character;
-  const char *name;
-  bool (*execute)(char c);
+  const char character;     // 7-bit ASCII character which should trigger the command (e.g. 'k')
+  const char *name;         // name of the command for help purposes (e.g. "increase gain")
+  bool (*execute)(char c);  // function which will execute the command and return
+                            //   true if the command executes successfully and false otherwise.
+                            //   The callback will be passed the character which triggered the command
 } COMMAND;
 
 typedef struct {
@@ -101,13 +118,14 @@ typedef struct {
 class ExtendedSerialManager {
   public:
     ExtendedSerialManager(
-      CONFIGURABLE knobs[],
-      int channelCount,
-      int knobCount,
-      COMMAND commands[],
-      int commandCount,
-      void (*apply)(void),
-      void (*activate)(int channel, int knob)
+      CONFIGURABLE knobs[],                   // pointer to the list of configured knobs
+      int channelCount,                       // number of channels
+      int knobCount,                          // number of knobs available per channel
+      COMMAND commands[],                     // pointer to the list of configured commands
+      int commandCount,                       // number of commands
+      void (*apply)(void),                    // function that will apply the updated configuration
+      void (*activate)(int channel, int knob) // function that will "activate" the specified
+                                              //   channel/knob configuration (e.g. for potentiometer control)
     );
 
     void processByte(char c);
