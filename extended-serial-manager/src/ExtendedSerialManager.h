@@ -149,6 +149,9 @@ class ExtendedSerialManager {
     char buffer[256];
     char *bufferPtr = buffer;
 
+    // float buffer
+    float floatBuffer[64];
+
     // knob configuration
     CONFIGURABLE *knobs;
     int channelCount;
@@ -346,34 +349,47 @@ void ExtendedSerialManager::handleSetCommand(const char *options) {
 
 void ExtendedSerialManager::handleApplyCommand(const char *options) {
   int channel = 0;
+  int floatCount = 0;
   char knob = 0;
   char *ptr = (char *)options;
   char *nextPtr = (char *)options;
+  CONFIGURABLE *nextKnob;
+  int knobIncrement;
+  int count;
   while (isDigit(*ptr)) {
     // This is probably terrible form
     channel = channel * 10 + (*ptr - '0');
     ptr++;
   }
   knob = *ptr++;
-  nextPtr = ptr;
-  if (knob == '=') {
-    // Channel must have been specified
-    CONFIGURABLE *nextKnob = getKnob(channel, 0);
-    for (int ii = 0; ii < knobCount; ii++) {
-      while (*nextPtr != ',' && *nextPtr != '\0') nextPtr++;
-      *nextKnob->value = strtof(ptr, &nextPtr);
-      ptr = ++nextPtr;
-      nextKnob += 1;
-    }
-  } else {
+  if (*ptr == '=') {
+    // A knob was specified
+    nextKnob = getKnob(0, knob & 0x20 ? knob - 'a' : knob - 'A');
+    knobIncrement = knobCount;
+    count = channelCount;
     ptr++;
-    CONFIGURABLE *nextKnob = getKnob(0, knob & 0x20 ? knob - 'a' : knob - 'A');
-    for (int ii = 0; ii < channelCount; ii++) {
-      while (*nextPtr != ',' && *nextPtr != '\0') nextPtr++;
-      *nextKnob->value = strtof(ptr, &nextPtr);
-      ptr = ++nextPtr;
-      nextKnob += knobCount;
-    }
+  } else {
+    nextKnob = getKnob(channel, 0);
+    knobIncrement = 1;
+    count = knobCount;
+  }
+  nextPtr = ptr;
+  while (*nextPtr != '\0') {
+    while (*++nextPtr != ',' && *nextPtr != '\0') {}
+    *nextPtr = 0;
+    floatBuffer[floatCount++] = strtof(ptr, &nextPtr);
+    ptr = ++nextPtr;
+  }
+  if (floatCount != count) {
+    ackIfExtended(false);
+    return;
+  }
+  for (int ii = 0; ii < count; ii++) {
+    *nextKnob->value = (floatBuffer[ii] < nextKnob->min)
+        ? nextKnob->min
+        : (floatBuffer[ii] > nextKnob->max)
+          ? nextKnob->max : floatBuffer[ii];
+    nextKnob += knobIncrement;
   }
   handleQueryCommand("&");
   apply();
