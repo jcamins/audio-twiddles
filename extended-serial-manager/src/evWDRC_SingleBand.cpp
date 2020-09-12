@@ -24,7 +24,7 @@ void setupTympanHardware(void);
 void servicePotentiometer(unsigned long curTime_millis,unsigned long updatePeriod_millis);
 void applyConfiguration(void);
 void activateKnob(int channel, int knob);
-bool runCommand(char cmd);
+bool runCommand(char c);
 
 #define OPTION_ATTACK       0
 #define OPTION_RELEASE      1
@@ -59,7 +59,11 @@ CONFIGURABLE options[] = {
   { "cr", &gha.cr, "", 0.01f, 5.0f }
 };
 
-ExtendedSerialManager esm(options, 1, 7, applyConfiguration, activateKnob, runCommand);
+COMMAND commands[] = {
+  { 'd', "do a thing", runCommand }
+};
+
+ExtendedSerialManager esm(options, 1, 7, commands, 1, applyConfiguration, activateKnob);
 
 //create audio library objects for handling the audio
 Tympan                  myTympan(TympanRev::D);  //TympanRev::D or TympanRev::C
@@ -80,8 +84,9 @@ void activateKnob(int channel, int knob) {
   selectedOption = knob;
 }
 
-bool runCommand(char cmd) {
-  return false;
+bool runCommand(char c) {
+  myTympan.println("We did a thing");
+  return true;
 }
 
 //define a function to setup the Teensy Audio Board how I like it
@@ -135,7 +140,7 @@ void loop(void) {
 
   //service the potentiometer...if enough time has passed
   servicePotentiometer(millis(),100); //update every 100msec
-  esm.processStream(&Serial);
+  while (Serial.available()) esm.processByte(Serial.read());
 
   //update the memory and CPU usage...if enough time has passed
   myTympan.printCPUandMemory(millis(),3000); //print every 3000 msec

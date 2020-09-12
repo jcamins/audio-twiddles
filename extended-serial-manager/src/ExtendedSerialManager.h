@@ -12,7 +12,7 @@
  * 1. The protocol must be human-readable.
  * 2. The protocol must be reasonably terse.
  * 3. Implementation details on the Tympan side should be limited to this class as much as possible.
- * 4. No command sent to the Tympan can be more than 8 characters long.
+ * 4. No command sent to the Tympan can be more than 256 characters long, and most should be under 8.
  * 5. The protocol must be backward-compatible with the existing Tympan Remote app.
  * 
  * The grammar for the protocol is represented by the following EBNF grammar:
@@ -21,7 +21,7 @@
  * knob_identifier    ::= "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | "L" | "M"
  *                      | "N" | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z"
  * end_of_message     ::= ";"
- * basic_command      ::= ? any character except semicolon ?
+ * basic_command      ::= ? any ASCII (7-bit) character except semicolon ?
  * basic_mode         ::= "\;"
  * extended_mode      ::= "/"
  * help_command       ::= "?" , end_of_message
@@ -33,12 +33,15 @@
  * increment_command  ::= "+" , [channel_identifier] , knob_identifier , end_of_message
  * decrement_command  ::= "-" , [channel_identifier] , knob_identifier , end_of_message
  * set_command        ::= "*" , [channel_identifier] , knob_identifier , ? integer between 0 and 99 inclusive ? , end_of_message
+ * apply_command      ::= "=" , (channel_identifier | knob_identifier) , "=" , ? float value ? , {"," , ? float value ?} , end_of_message
  * 
  * Several commands are reserved by the protocol:
  *  J - execute get_layout command
  *  h - execute help command
  *  \ - switch to basic mode
  *  / - switch to extended mode
+ * 
+ * Whitespace is probably not a good choice for commands, even if it is technically permissible.
  * 
  * Responses intended exclusively for human consumption will be prefixed with "Msg: ".
  *
@@ -49,7 +52,7 @@
  * Responses are newline delimited rather than semicolon delimited.
  */
 
-#define PRINT_MESSAGES_FOR_HUMANS    false
+#define PRINT_MESSAGES_FOR_HUMANS    true
 
 #define TYMPAN_ESM_BASIC_MODE_COMMAND '\\'
 #define TYMPAN_ESM_HELP_COMMAND       '?'
@@ -60,6 +63,8 @@
 #define TYMPAN_ESM_INCREMENT_COMMAND  '+'
 #define TYMPAN_ESM_DECREMENT_COMMAND  '-'
 #define TYMPAN_ESM_SET_COMMAND        '*'
+#define TYMPAN_ESM_APPLY_COMMAND      '='
+#define TYMPAN_ESM_END_OF_MESSAGE     ';'
 
 #include <ctype.h>
 #include <Tympan_Library.h>
@@ -82,6 +87,12 @@ typedef struct {
 } CONFIGURABLE;
 
 typedef struct {
+  const char character;
+  const char *name;
+  bool (*execute)(char c);
+} COMMAND;
+
+typedef struct {
   int channel;
   int knob;
   int value;
@@ -93,35 +104,48 @@ class ExtendedSerialManager {
       CONFIGURABLE knobs[],
       int channelCount,
       int knobCount,
+      COMMAND commands[],
+      int commandCount,
       void (*apply)(void),
-      void (*activate)(int channel, int knob),
-      bool (*run)(char cmd)
+      void (*activate)(int channel, int knob)
     );
 
-    void processStream(Stream *stream);
+    void processByte(char c);
     void processExtendedCommand(char *cmd);
 
   protected:
     void handleHelpCommand(void);
     void handleGetLayoutCommand(void);
-    void handleRunCommand(char *options);
-    void handleActivateCommand(char *options);
-    void handleQueryCommand(char *options);
-    void handleIncrementCommand(char *options);
-    void handleDecrementCommand(char *options);
-    void handleSetCommand(char *options);
+    void handleRunCommand(const char *options);
+    void handleActivateCommand(const char *options);
+    void handleQueryCommand(const char *options);
+    void handleIncrementCommand(const char *options);
+    void handleDecrementCommand(const char *options);
+    void handleSetCommand(const char *options);
+    void handleApplyCommand(const char *options);
       
   private:
     MODE mode = Basic;
-    char buffer[8];
+
+    // input buffer
+    char buffer[256];
+    char *bufferPtr = buffer;
+
+    // knob configuration
     CONFIGURABLE *knobs;
     int channelCount;
     int knobCount;
+
+    // command configuration
+    COMMAND *commands;
+    bool (*commandLut[128])(char c);
+    int commandCount;
+
+    // mandatory helper methods
     void (*apply)(void);
     void (*activate)(int channel, int knob);
-    bool (*run)(char cmd);
 
-    CMD_OPTIONS parseOptions(char *options);
+    CMD_OPTIONS parseOptions(const char *options);
     CONFIGURABLE *getKnob(int channel, int knob);
     CONFIGURABLE *getKnob(CMD_OPTIONS opts);
     char getKnobIdentifier(int knob);
@@ -135,34 +159,34 @@ ExtendedSerialManager::ExtendedSerialManager(
   CONFIGURABLE knobs[],
   int channelCount,
   int knobCount,
+  COMMAND commands[],
+  int commandCount,
   void (*apply)(void),
-  void (*activate)(int channel, int knob),
-  bool (*run)(char cmd)
+  void (*activate)(int channel, int knob)
 ) {
   this->knobs = knobs;
   this->channelCount = channelCount;
   this->knobCount = knobCount;
+  this->commands = commands;
+  this->commandCount = commandCount;
   this->apply = apply;
   this->activate = activate;
-  this->run = run;
+  memset(commandLut, 0, sizeof(commandLut));
+  for (int ii = 0; ii < commandCount; ii++) {
+    commandLut[commands[ii].character & 0x7f] = commands[ii].execute;
+  }
 };
 
-void ExtendedSerialManager::processStream(Stream *stream) {
-  int count;
-  while (stream->available()) {
-    if (mode == Extended) {
-      count = stream->readBytesUntil(';', (char *)&buffer, 8);
-      if (count && (count < 8 || buffer[7] == ';')) {
-        processExtendedCommand(buffer);
-      } else {
-        #if (PRINT_MESSAGES_FOR_HUMANS)
-          myTympan.println("Msg: unable to parse message");
-        #endif
-        myTympan.println("ACK=0");
-      }
+void ExtendedSerialManager::processByte(char c) {
+  if (mode == Basic) {
+    handleRunCommand(&c);
+  } else {
+    if (c == TYMPAN_ESM_END_OF_MESSAGE) {
+      *bufferPtr = '\0';
+      bufferPtr = buffer;
+      processExtendedCommand(buffer);
     } else {
-      char c = stream->read();
-      handleRunCommand(&c);
+      *bufferPtr++ = c;
     }
   }
 }
@@ -178,6 +202,7 @@ void ExtendedSerialManager::processExtendedCommand(char *cmd) {
     case TYMPAN_ESM_INCREMENT_COMMAND: handleIncrementCommand(&cmd[1]); break;
     case TYMPAN_ESM_DECREMENT_COMMAND: handleDecrementCommand(&cmd[1]); break;
     case TYMPAN_ESM_SET_COMMAND: handleSetCommand(&cmd[1]); break;
+    case TYMPAN_ESM_APPLY_COMMAND: handleApplyCommand(&cmd[1]); break;
     default:
       #if (PRINT_MESSAGES_FOR_HUMANS)
         myTympan.println("Unable to parse command");
@@ -201,9 +226,14 @@ void ExtendedSerialManager::handleHelpCommand(void) {
   myTympan.println("Msg:   +[channel]<knob>; - increment  current value for specified knob of optionally specified channel");
   myTympan.println("Msg:   -[channel]<knob>; - decrement current value for specified knob of optionally specified channel");
   myTympan.println("Msg:   *[channel]<knob><value>; - set current value for specified knob of optionally specified channel as percentage of range");
+  myTympan.println("Msg:   =<channel|knob>=<comma-separated values>; - set all values for a 'slice' (either all knobs for a channel or a particular knob for all channels)");
   myTympan.println("Msg: Knobs:");
   for (int ii = 0; ii < knobCount; ii++) {
     myTympan.printf("Msg:   %c - %s (%f%s-%f%s)\n", getKnobIdentifier(ii), knobs[ii].name, knobs[ii].min, knobs[ii].unit, knobs[ii].max, knobs[ii].unit);
+  }
+  myTympan.println("Msg: Commands:");
+  for (int ii = 0; ii < commandCount; ii++) {
+    myTympan.printf("Msg:   %c - %s\n", commands[ii].character, commands[ii].name);
   }
 }
 
@@ -211,17 +241,19 @@ void ExtendedSerialManager::handleGetLayoutCommand(void) {
 
 }
 
-void ExtendedSerialManager::handleRunCommand(char *options) {
+void ExtendedSerialManager::handleRunCommand(const char *options) {
   switch (options[0]) {
     case '/': mode = Extended; myTympan.println("ACK=1"); break;
     case '\\': mode = Basic; myTympan.println("ACK=1"); break;
     case 'h': handleHelpCommand(); ackIfExtended(); break;
     case 'J': handleGetLayoutCommand(); ackIfExtended(); break;
-    default: ackIfExtended(run(options[0]));
+    default:
+      bool (*execute)(char c) = commandLut[options[0] & 0x7f];
+      ackIfExtended(execute ? execute(options[0]) : false);
   }
 }
 
-void ExtendedSerialManager::handleActivateCommand(char *options) {
+void ExtendedSerialManager::handleActivateCommand(const char *options) {
   CMD_OPTIONS opts = parseOptions(options);
   #if (PRINT_MESSAGES_FOR_HUMANS)
     myTympan.printf(
@@ -234,7 +266,7 @@ void ExtendedSerialManager::handleActivateCommand(char *options) {
   activate(opts.channel, opts.knob);
 }
 
-void ExtendedSerialManager::handleQueryCommand(char *options) {
+void ExtendedSerialManager::handleQueryCommand(const char *options) {
   CONFIGURABLE *knob;
   if (options[0] == '&') {
     #if (PRINT_MESSAGES_FOR_HUMANS)
@@ -264,7 +296,7 @@ void ExtendedSerialManager::handleQueryCommand(char *options) {
   }
 }
 
-void ExtendedSerialManager::handleIncrementCommand(char *options) {
+void ExtendedSerialManager::handleIncrementCommand(const char *options) {
   CMD_OPTIONS opts = parseOptions(options);
   CONFIGURABLE *knob = getKnob(opts);
   float oldVal = *knob->value;
@@ -274,7 +306,7 @@ void ExtendedSerialManager::handleIncrementCommand(char *options) {
   apply();
 }
 
-void ExtendedSerialManager::handleDecrementCommand(char *options) {
+void ExtendedSerialManager::handleDecrementCommand(const char *options) {
   CMD_OPTIONS opts = parseOptions(options);
   CONFIGURABLE *knob = getKnob(opts);
   float oldVal = *knob->value;
@@ -284,7 +316,7 @@ void ExtendedSerialManager::handleDecrementCommand(char *options) {
   apply();
 }
 
-void ExtendedSerialManager::handleSetCommand(char *options) {
+void ExtendedSerialManager::handleSetCommand(const char *options) {
   CMD_OPTIONS opts = parseOptions(options);
   CONFIGURABLE *knob = getKnob(opts);
   float oldVal = *knob->value;
@@ -294,9 +326,44 @@ void ExtendedSerialManager::handleSetCommand(char *options) {
   apply();
 }
 
-CMD_OPTIONS ExtendedSerialManager::parseOptions(char *options) {
+void ExtendedSerialManager::handleApplyCommand(const char *options) {
+  int channel = 0;
+  char knob = 0;
+  char *ptr = (char *)options;
+  char *nextPtr = (char *)options;
+  while (isDigit(*ptr)) {
+    // This is probably terrible form
+    channel = channel * 10 + (*ptr - '0');
+    ptr++;
+  }
+  knob = *ptr++;
+  nextPtr = ptr;
+  if (knob == '=') {
+    // Channel must have been specified
+    CONFIGURABLE *nextKnob = getKnob(channel, 0);
+    for (int ii = 0; ii < knobCount; ii++) {
+      while (*nextPtr != ',' && *nextPtr != '\0') nextPtr++;
+      *nextKnob->value = strtof(ptr, &nextPtr);
+      ptr = ++nextPtr;
+      nextKnob += 1;
+    }
+  } else {
+    ptr++;
+    CONFIGURABLE *nextKnob = getKnob(0, knob & 0x20 ? knob - 'a' : knob - 'A');
+    for (int ii = 0; ii < channelCount; ii++) {
+      while (*nextPtr != ',' && *nextPtr != '\0') nextPtr++;
+      *nextKnob->value = strtof(ptr, &nextPtr);
+      ptr = ++nextPtr;
+      nextKnob += knobCount;
+    }
+  }
+  handleQueryCommand("&");
+  apply();
+}
+
+CMD_OPTIONS ExtendedSerialManager::parseOptions(const char *options) {
   CMD_OPTIONS parsed = { 0, 0, 0 };
-  char *ptr = options;
+  char *ptr = (char *)options;
   while (isDigit(*ptr)) {
     // This is probably terrible form
     parsed.channel = parsed.channel * 10 + (*ptr - '0');
@@ -325,7 +392,7 @@ inline char ExtendedSerialManager::getKnobIdentifier(int knob) {
 
 inline void ExtendedSerialManager::printValue(CONFIGURABLE *knob) {
   int channel = (knob - knobs) / sizeof(CONFIGURABLE);
-  char knobIdentifier = (knob - knobs) % sizeof(CONFIGURABLE);
+  char knobIdentifier = getKnobIdentifier((knob - knobs) % sizeof(CONFIGURABLE));
   myTympan.print(knobIdentifier);
   myTympan.print(channel);
   myTympan.print("=");
@@ -335,7 +402,7 @@ inline void ExtendedSerialManager::printValue(CONFIGURABLE *knob) {
 
 inline void ExtendedSerialManager::printValue(CONFIGURABLE *knob, const char *verb, const float oldVal) {
   int channel = (knob - knobs) / sizeof(CONFIGURABLE);
-  char knobIdentifier = (knob - knobs) % sizeof(CONFIGURABLE);
+  char knobIdentifier = getKnobIdentifier((knob - knobs) % sizeof(CONFIGURABLE));
   #if (PRINT_MESSAGES_FOR_HUMANS)
     myTympan.printf(
         "Msg: %s %s (%c) on channel %i from %f%s to %f%s (clamped)\n",
