@@ -133,7 +133,6 @@ class ExtendedSerialManager {
 
     void processByte(char c);
     void processExtendedCommand(char *cmd);
-    void reset(void);
 
   protected:
     void handleHelpCommand(void);
@@ -216,7 +215,7 @@ void ExtendedSerialManager::processByte(char c) {
   } else {
     if (c == TYMPAN_ESM_END_OF_MESSAGE) {
       *bufferPtr = '\0';
-      reset();
+      bufferPtr = buffer;
       processExtendedCommand(buffer);
     } else {
       *bufferPtr++ = c;
@@ -237,16 +236,13 @@ void ExtendedSerialManager::processExtendedCommand(char *cmd) {
     case TYMPAN_ESM_SET_COMMAND: handleSetCommand(&cmd[1]); break;
     case TYMPAN_ESM_APPLY_COMMAND: handleApplyCommand(&cmd[1]); break;
     default:
+      myTympan.println(cmd);
       #if (PRINT_MESSAGES_FOR_HUMANS)
         myTympan.println("Unable to parse command");
       #endif
       myTympan.println("ACK=0");
       return;
   }
-}
-
-void ExtendedSerialManager::reset(void) {
-  bufferPtr = buffer;
 }
 
 void ExtendedSerialManager::handleHelpCommand(void) {

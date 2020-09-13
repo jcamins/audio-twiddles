@@ -18,7 +18,7 @@
 // Include the required libraries
 #include <Arduino.h>
 #include <Tympan_Library.h>
-#include "ExtendedSerialManager.h"
+#include "../../shared/ExtendedSerialManager.h"
 
 void setupTympanHardware(void);
 void servicePotentiometer(unsigned long curTime_millis,unsigned long updatePeriod_millis);
@@ -64,6 +64,7 @@ COMMAND commands[] = {
 };
 
 ExtendedSerialManager esm(options, 1, 7, commands, 1, applyConfiguration, activateKnob, 0, OPTION_CR);
+ExtendedSerialManager esm1(options, 1, 7, commands, 1, applyConfiguration, activateKnob, 0, OPTION_CR);
 
 //create audio library objects for handling the audio
 Tympan                  myTympan(TympanRev::D);  //TympanRev::D or TympanRev::C
@@ -140,10 +141,8 @@ void loop(void) {
 
   //service the potentiometer...if enough time has passed
   servicePotentiometer(millis(),100); //update every 100msec
-  esm.reset();
   while (Serial.available()) esm.processByte(Serial.read());
-  esm.reset();
-  while (Serial1.available()) esm.processByte(Serial1.read());
+  while (Serial1.available()) esm1.processByte(Serial1.read());
 
   //update the memory and CPU usage...if enough time has passed
   myTympan.printCPUandMemory(millis(),3000); //print every 3000 msec
