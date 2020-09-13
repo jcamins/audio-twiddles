@@ -20,25 +20,26 @@
  * 
  * The grammar for the protocol is represented by the following EBNF grammar:
  * 
- * channel_identifier ::= ? integer between 0 and 99 inclusive ?
- * knob_identifier    ::= "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | "L" | "M"
- *                      | "N" | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z"
- * end_of_message     ::= ";"
- * basic_command      ::= ? any ASCII (7-bit) character except semicolon ?
- * basic_mode         ::= "\;"
- * extended_mode      ::= "/"
- * help_command       ::= "?" , end_of_message
- * get_layout_command ::= "#" , end_of_message
- * run_command        ::= "!" , basic_command , end_of_message
- * activate_command   ::= "^" , [channel_identifier] , knob_identifier , end_of_message
- * query_all_command  ::= "&&" , end_of_message
- * query_command      ::= "&" , [channel_identifier] , knob_identifier , end_of_message
- * increment_command  ::= "+" , [channel_identifier] , knob_identifier , end_of_message
- * decrement_command  ::= "-" , [channel_identifier] , knob_identifier , end_of_message
- * set_command        ::= "*" , [channel_identifier] , knob_identifier
- *                      , ? integer between 0 and 99 inclusive ? , end_of_message
- * apply_command      ::= "=" , (channel_identifier | knob_identifier) , "="
- *                      , ? float value ? , {"," , ? float value ?} , end_of_message
+ * channel_identifier   ::= ? integer between 0 and 99 inclusive ?
+ * knob_identifier      ::= "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | "L" | "M"
+ *                        | "N" | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z"
+ * end_of_message       ::= ";"
+ * basic_command        ::= ? any ASCII (7-bit) character except semicolon ?
+ * basic_mode           ::= "\;"
+ * extended_mode        ::= "/"
+ * help_command         ::= "?" , end_of_message
+ * get_layout_command   ::= "#" , end_of_message
+ * run_command          ::= "!" , basic_command , end_of_message
+ * activate_command     ::= "^" , [channel_identifier] , knob_identifier , end_of_message
+ * show_active_command  ::= "&&" , end_of_message
+ * query_all_command    ::= "&&" , end_of_message
+ * query_command        ::= "&" , [channel_identifier] , knob_identifier , end_of_message
+ * increment_command    ::= "+" , [channel_identifier] , knob_identifier , end_of_message
+ * decrement_command    ::= "-" , [channel_identifier] , knob_identifier , end_of_message
+ * set_command          ::= "*" , [channel_identifier] , knob_identifier
+ *                        , ? integer between 0 and 99 inclusive ? , end_of_message
+ * apply_command        ::= "=" , (channel_identifier | knob_identifier) , "="
+ *                        , ? float value ? , {"," , ? float value ?} , end_of_message
  * 
  * Several commands are reserved by the protocol:
  *  J - execute get_layout command
@@ -124,8 +125,10 @@ class ExtendedSerialManager {
       COMMAND commands[],                     // pointer to the list of configured commands
       int commandCount,                       // number of commands
       void (*apply)(void),                    // function that will apply the updated configuration
-      void (*activate)(int channel, int knob) // function that will "activate" the specified
+      void (*activate)(int channel, int knob),// function that will "activate" the specified
                                               //   channel/knob configuration (e.g. for potentiometer control)
+      int activeChannel,
+      int activeKnob
     );
 
     void processByte(char c);
@@ -166,6 +169,10 @@ class ExtendedSerialManager {
     void (*apply)(void);
     void (*activate)(int channel, int knob);
 
+    // active configuration
+    int activeChannel;
+    int activeKnob;
+
     CMD_OPTIONS parseOptions(const char *options);
     CONFIGURABLE *getKnob(int channel, int knob);
     CONFIGURABLE *getKnob(CMD_OPTIONS opts);
@@ -183,7 +190,9 @@ ExtendedSerialManager::ExtendedSerialManager(
   COMMAND commands[],
   int commandCount,
   void (*apply)(void),
-  void (*activate)(int channel, int knob)
+  void (*activate)(int channel, int knob),
+  int activeChannel,
+  int activeKnob
 ) {
   this->knobs = knobs;
   this->channelCount = channelCount;
@@ -192,6 +201,8 @@ ExtendedSerialManager::ExtendedSerialManager(
   this->commandCount = commandCount;
   this->apply = apply;
   this->activate = activate;
+  this->activeChannel = activeChannel;
+  this->activeKnob = activeKnob;
   memset(commandLut, 0, sizeof(commandLut));
   for (int ii = 0; ii < commandCount; ii++) {
     commandLut[commands[ii].character & 0x7f] = commands[ii].execute;
@@ -242,8 +253,8 @@ void ExtendedSerialManager::handleHelpCommand(void) {
   myTympan.println("Msg:   ?; - print this help");
   myTympan.println("Msg:   #; - print layout JSON");
   myTympan.println("Msg:   !<command>; - run the specified 1-character command (equivalent to basic-mode commands)");
-  myTympan.println("Msg:   ^[channel]<knob>; - activate specified knob for optionally specified channel");
-  myTympan.println("Msg:   &[channel]<knob>; - query current value for specified knob of optionally specified channel");
+  myTympan.println("Msg:   ^[channel]<knob>; - activate specified knob for optionally specified channel (specify ^ instead of channel/knob to see currently active)");
+  myTympan.println("Msg:   &[channel]<knob>; - query current value for specified knob of optionally specified channel (specify & instead of channel/knob for all)");
   myTympan.println("Msg:   +[channel]<knob>; - increment  current value for specified knob of optionally specified channel");
   myTympan.println("Msg:   -[channel]<knob>; - decrement current value for specified knob of optionally specified channel");
   myTympan.println("Msg:   *[channel]<knob><value>; - set current value for specified knob of optionally specified channel as percentage of range");
@@ -259,7 +270,48 @@ void ExtendedSerialManager::handleHelpCommand(void) {
 }
 
 void ExtendedSerialManager::handleGetLayoutCommand(void) {
-
+  String jsonConfig = "JSON={"
+    "'pages':["
+      "{'title':'Main','cards':["
+        "{'name':'Commands','buttons':[";
+  for (int ii = 0; ii < commandCount; ii++) {
+    ii && jsonConfig.append(",");
+    jsonConfig.append("{'id':'command-");
+    jsonConfig.append(commands[ii].character);
+    jsonConfig.append("','label':'");
+    jsonConfig.append(commands[ii].name);
+    jsonConfig.append("','cmd':'");
+    jsonConfig.append(commands[ii].character);
+    jsonConfig.append("','width':'12'}");
+  }
+  jsonConfig.append(
+        "]}"
+      "]}");
+  for (int ii = 0; ii < channelCount; ii++) {
+    jsonConfig.append(",");
+    jsonConfig.append("{'title':'Channel ");
+    jsonConfig.append(ii);
+    jsonConfig.append("','knobs':[");
+    for (int jj = 0; jj < knobCount; jj++) {
+      jj && jsonConfig.append(",");
+      jsonConfig.append("{'name':'");
+      jsonConfig.append(knobs[jj].name);
+      jsonConfig.append("','min':");
+      jsonConfig.append(knobs[jj].min);
+      jsonConfig.append(",'max':");
+      jsonConfig.append(knobs[jj].max);
+      jsonConfig.append(",'value':");
+      jsonConfig.append(*knobs[jj].value);
+      jsonConfig.append(",'unit':'");
+      jsonConfig.append(knobs[jj].unit);
+      jsonConfig.append("'}");
+    }
+    jsonConfig.append("]}");
+  }
+  jsonConfig.append(
+    "]"
+  "}");
+  myTympan.println(jsonConfig);
 }
 
 void ExtendedSerialManager::handleRunCommand(const char *options) {
@@ -275,16 +327,23 @@ void ExtendedSerialManager::handleRunCommand(const char *options) {
 }
 
 void ExtendedSerialManager::handleActivateCommand(const char *options) {
-  CMD_OPTIONS opts = parseOptions(options);
-  #if (PRINT_MESSAGES_FOR_HUMANS)
-    myTympan.printf(
-        "Msg: Activating %s (%c) on channel %i\n",
-        getKnob(opts)->name,
-        getKnobIdentifier(opts.knob),
-        opts.channel
-    );
-  #endif
-  activate(opts.channel, opts.knob);
+  if (options[0] != TYMPAN_ESM_ACTIVATE_COMMAND) {
+    CMD_OPTIONS opts = parseOptions(options);
+    #if (PRINT_MESSAGES_FOR_HUMANS)
+      myTympan.printf(
+          "Msg: Activating %s (%c) on channel %i\n",
+          getKnob(opts)->name,
+          getKnobIdentifier(opts.knob),
+          opts.channel
+      );
+    #endif
+    activeChannel = opts.channel;
+    activeKnob = opts.knob;
+    activate(opts.channel, opts.knob);
+  }
+  myTympan.print("ACTIVE=");
+  myTympan.print(activeChannel);
+  myTympan.println(getKnobIdentifier(activeKnob));
 }
 
 void ExtendedSerialManager::handleQueryCommand(const char *options) {
@@ -342,6 +401,7 @@ void ExtendedSerialManager::handleSetCommand(const char *options) {
   CONFIGURABLE *knob = getKnob(opts);
   float oldVal = *knob->value;
   float newVal = knob->min + (knob->max - knob->min) * (opts.value / 100.0f);
+  myTympan.println(opts.value);
   *knob->value = newVal < knob->min ? knob->min : newVal > knob->max ? knob->max : newVal;
   printValue(knob, "Setting", oldVal);
   apply();
@@ -405,9 +465,8 @@ CMD_OPTIONS ExtendedSerialManager::parseOptions(const char *options) {
   }
   // Just in case, let's support a lower-case knob identifier
   parsed.knob = (*ptr & 0x20) ? *ptr - 'a' : *ptr - 'A';
-  while (isDigit(*ptr)) {
+  while (isDigit(*++ptr)) {
     parsed.value = parsed.value * 10 + (*ptr - '0');
-    ptr++;
   }
   return parsed;
 }
@@ -450,8 +509,8 @@ inline void ExtendedSerialManager::printValue(CONFIGURABLE *knob, const char *ve
         knob->unit
     );
   #endif
-  myTympan.print(knobIdentifier);
   myTympan.print(channel);
+  myTympan.print(knobIdentifier);
   myTympan.print("=");
   myTympan.print(*knob->value);
   myTympan.print("\n");
