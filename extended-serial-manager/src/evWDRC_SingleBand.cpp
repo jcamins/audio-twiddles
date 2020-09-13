@@ -140,7 +140,9 @@ void loop(void) {
 
   //service the potentiometer...if enough time has passed
   servicePotentiometer(millis(),100); //update every 100msec
+  esm.reset();
   while (Serial.available()) esm.processByte(Serial.read());
+  esm.reset();
   while (Serial1.available()) esm.processByte(Serial1.read());
 
   //update the memory and CPU usage...if enough time has passed
